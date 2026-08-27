@@ -28,6 +28,14 @@ export const getDatabase = () => {
   }
 };
 
+export const saveDatabaseLocal = (db) => {
+  try {
+    localStorage.setItem(DB_KEY, JSON.stringify(db));
+  } catch (e) {
+    console.warn('Error saving to localStorage:', e);
+  }
+};
+
 const dbChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('bayanapalli_db_channel') : null;
 
 export const notifyDbChanged = () => {
@@ -154,12 +162,7 @@ export const fetchDatabaseApi = async () => {
       messages: rawMsg.map(normalizeMessage)
     };
 
-    try {
-      localStorage.setItem(DB_KEY, JSON.stringify(data));
-    } catch (e) {
-      console.warn('localStorage cache failed:', e);
-    }
-
+    saveDatabaseLocal(data);
     return data;
   } catch (err) {
     console.error('Error fetching database from Supabase:', err);
@@ -171,34 +174,39 @@ export const getFreshDatabase = async () => {
   return await fetchDatabaseApi();
 };
 
-// Committee Members
+// --- Committee Members ---
 export const getMembers = () => getDatabase().committee;
 
 export const addMember = async (member) => {
   const full = normalizeMember(member);
   
-  // Try full payload first
-  let { data, error } = await supabase.from('committee').insert([full]).select();
+  // Optimistic local cache update for INSTANT UI rendering
+  const db = getDatabase();
+  db.committee = [...db.committee.filter(m => m.id !== full.id), full];
+  saveDatabaseLocal(db);
+  notifyDbChanged();
 
-  // If column error PGRST204 occurs, fallback to core existing schema columns
+  // Async push to Supabase
+  let { data, error } = await supabase.from('committee').insert([full]).select();
   if (error && error.code === 'PGRST204') {
-    const corePayload = {
-      name: full.name,
-      role: full.role,
-      phone: full.phone,
-      image: full.photo
-    };
+    const corePayload = { name: full.name, role: full.role, phone: full.phone, image: full.photo };
     const retry = await supabase.from('committee').insert([corePayload]).select();
     data = retry.data;
-    error = retry.error;
   }
-
-  if (error) console.error('addMember error:', error);
+  
+  const savedItem = (data && data[0]) ? normalizeMember(data[0]) : full;
+  db.committee = [...db.committee.filter(m => m.id !== full.id && m.id !== savedItem.id), savedItem];
+  saveDatabaseLocal(db);
   notifyDbChanged();
-  return (data && data[0]) ? normalizeMember(data[0]) : full;
+  return savedItem;
 };
 
 export const updateMember = async (id, updatedFields) => {
+  const db = getDatabase();
+  db.committee = db.committee.map(m => m.id === id ? normalizeMember({ ...m, ...updatedFields }) : m);
+  saveDatabaseLocal(db);
+  notifyDbChanged();
+
   let { error } = await supabase.from('committee').update(updatedFields).eq('id', id);
   if (error && error.code === 'PGRST204') {
     const coreFields = {};
@@ -206,41 +214,47 @@ export const updateMember = async (id, updatedFields) => {
     if (updatedFields.role) coreFields.role = updatedFields.role;
     if (updatedFields.phone) coreFields.phone = updatedFields.phone;
     if (updatedFields.photo || updatedFields.image) coreFields.image = updatedFields.photo || updatedFields.image;
-    
-    const retry = await supabase.from('committee').update(coreFields).eq('id', id);
-    error = retry.error;
+    await supabase.from('committee').update(coreFields).eq('id', id);
   }
-  if (error) console.error('updateMember error:', error);
-  notifyDbChanged();
 };
 
 export const deleteMember = async (id) => {
-  const { error } = await supabase.from('committee').delete().eq('id', id);
-  if (error) console.error('deleteMember error:', error);
+  const db = getDatabase();
+  db.committee = db.committee.filter(m => m.id !== id);
+  saveDatabaseLocal(db);
   notifyDbChanged();
+
+  await supabase.from('committee').delete().eq('id', id);
 };
 
-// Festivals
+// --- Festivals ---
 export const addFestival = async (festival) => {
   const full = normalizeFestival(festival);
+  const db = getDatabase();
+  db.festivals = [...db.festivals.filter(f => f.id !== full.id), full];
+  saveDatabaseLocal(db);
+  notifyDbChanged();
+
   let { data, error } = await supabase.from('festivals').insert([full]).select();
   if (error && error.code === 'PGRST204') {
-    const corePayload = {
-      title: full.title || full.name,
-      date: full.date,
-      description: full.description,
-      image: full.coverImage
-    };
+    const corePayload = { title: full.title || full.name, date: full.date, description: full.description, image: full.coverImage };
     const retry = await supabase.from('festivals').insert([corePayload]).select();
     data = retry.data;
-    error = retry.error;
   }
-  if (error) console.error('addFestival error:', error);
+  
+  const savedItem = (data && data[0]) ? normalizeFestival(data[0]) : full;
+  db.festivals = [...db.festivals.filter(f => f.id !== full.id && f.id !== savedItem.id), savedItem];
+  saveDatabaseLocal(db);
   notifyDbChanged();
-  return (data && data[0]) ? normalizeFestival(data[0]) : full;
+  return savedItem;
 };
 
 export const updateFestival = async (id, updatedFields) => {
+  const db = getDatabase();
+  db.festivals = db.festivals.map(f => f.id === id ? normalizeFestival({ ...f, ...updatedFields }) : f);
+  saveDatabaseLocal(db);
+  notifyDbChanged();
+
   let { error } = await supabase.from('festivals').update(updatedFields).eq('id', id);
   if (error && error.code === 'PGRST204') {
     const coreFields = {};
@@ -248,173 +262,204 @@ export const updateFestival = async (id, updatedFields) => {
     if (updatedFields.date) coreFields.date = updatedFields.date;
     if (updatedFields.description) coreFields.description = updatedFields.description;
     if (updatedFields.coverImage || updatedFields.image) coreFields.image = updatedFields.coverImage || updatedFields.image;
-
-    const retry = await supabase.from('festivals').update(coreFields).eq('id', id);
-    error = retry.error;
+    await supabase.from('festivals').update(coreFields).eq('id', id);
   }
-  if (error) console.error('updateFestival error:', error);
-  notifyDbChanged();
 };
 
 export const deleteFestival = async (id) => {
-  const { error } = await supabase.from('festivals').delete().eq('id', id);
-  if (error) console.error('deleteFestival error:', error);
+  const db = getDatabase();
+  db.festivals = db.festivals.filter(f => f.id !== id);
+  saveDatabaseLocal(db);
   notifyDbChanged();
+
+  await supabase.from('festivals').delete().eq('id', id);
 };
 
-// Photo Albums
+// --- Photo Albums ---
 export const addAlbum = async (album) => {
   const full = normalizeAlbum(album);
+  const db = getDatabase();
+  db.albums = [...db.albums.filter(a => a.id !== full.id), full];
+  saveDatabaseLocal(db);
+  notifyDbChanged();
+
   let { data, error } = await supabase.from('albums').insert([full]).select();
   if (error && error.code === 'PGRST204') {
-    const corePayload = {
-      title: full.title || full.name,
-      date: full.date,
-      cover_image: full.coverImage
-    };
+    const corePayload = { title: full.title || full.name, date: full.date, cover_image: full.coverImage };
     const retry = await supabase.from('albums').insert([corePayload]).select();
     data = retry.data;
-    error = retry.error;
   }
-  if (error) console.error('addAlbum error:', error);
+  
+  const savedItem = (data && data[0]) ? normalizeAlbum(data[0]) : full;
+  db.albums = [...db.albums.filter(a => a.id !== full.id && a.id !== savedItem.id), savedItem];
+  saveDatabaseLocal(db);
   notifyDbChanged();
-  return (data && data[0]) ? normalizeAlbum(data[0]) : full;
+  return savedItem;
 };
 
 export const updateAlbum = async (id, updatedFields) => {
+  const db = getDatabase();
+  db.albums = db.albums.map(a => a.id === id ? normalizeAlbum({ ...a, ...updatedFields }) : a);
+  saveDatabaseLocal(db);
+  notifyDbChanged();
+
   let { error } = await supabase.from('albums').update(updatedFields).eq('id', id);
   if (error && error.code === 'PGRST204') {
     const coreFields = {};
     if (updatedFields.title || updatedFields.name) coreFields.title = updatedFields.title || updatedFields.name;
     if (updatedFields.date) coreFields.date = updatedFields.date;
     if (updatedFields.coverImage || updatedFields.cover_image) coreFields.cover_image = updatedFields.coverImage || updatedFields.cover_image;
-
-    const retry = await supabase.from('albums').update(coreFields).eq('id', id);
-    error = retry.error;
+    await supabase.from('albums').update(coreFields).eq('id', id);
   }
-  if (error) console.error('updateAlbum error:', error);
-  notifyDbChanged();
 };
 
 export const deleteAlbum = async (id) => {
-  const { error } = await supabase.from('albums').delete().eq('id', id);
-  if (error) console.error('deleteAlbum error:', error);
+  const db = getDatabase();
+  db.albums = db.albums.filter(a => a.id !== id);
+  saveDatabaseLocal(db);
   notifyDbChanged();
+
+  await supabase.from('albums').delete().eq('id', id);
 };
 
-// Photos
+// --- Photos ---
 export const addPhoto = async (photo) => {
   const full = normalizePhoto(photo);
+  const db = getDatabase();
+  db.photos = [...db.photos.filter(p => p.id !== full.id), full];
+  saveDatabaseLocal(db);
+  notifyDbChanged();
+
   let { data, error } = await supabase.from('photos').insert([full]).select();
   if (error && error.code === 'PGRST204') {
-    const corePayload = {
-      url: full.url,
-      caption: full.caption
-    };
+    const corePayload = { url: full.url, caption: full.caption };
     const retry = await supabase.from('photos').insert([corePayload]).select();
     data = retry.data;
-    error = retry.error;
   }
-  if (error) console.error('addPhoto error:', error);
+  const savedItem = (data && data[0]) ? normalizePhoto(data[0]) : full;
+  db.photos = [...db.photos.filter(p => p.id !== full.id && p.id !== savedItem.id), savedItem];
+  saveDatabaseLocal(db);
   notifyDbChanged();
-  return (data && data[0]) ? normalizePhoto(data[0]) : full;
+  return savedItem;
 };
 
 export const addPhotos = async (photosList) => {
   const payloads = photosList.map(normalizePhoto);
+  const db = getDatabase();
+  db.photos = [...db.photos, ...payloads];
+  saveDatabaseLocal(db);
+  notifyDbChanged();
+
   let { data, error } = await supabase.from('photos').insert(payloads).select();
   if (error && error.code === 'PGRST204') {
     const corePayloads = payloads.map(p => ({ url: p.url, caption: p.caption }));
     const retry = await supabase.from('photos').insert(corePayloads).select();
     data = retry.data;
-    error = retry.error;
   }
-  if (error) console.error('addPhotos error:', error);
-  notifyDbChanged();
   return (data || []).map(normalizePhoto);
 };
 
 export const updatePhoto = async (id, updatedFields) => {
+  const db = getDatabase();
+  db.photos = db.photos.map(p => p.id === id ? normalizePhoto({ ...p, ...updatedFields }) : p);
+  saveDatabaseLocal(db);
+  notifyDbChanged();
+
   let { error } = await supabase.from('photos').update(updatedFields).eq('id', id);
   if (error && error.code === 'PGRST204') {
-    const retry = await supabase.from('photos').update({ caption: updatedFields.caption }).eq('id', id);
-    error = retry.error;
+    await supabase.from('photos').update({ caption: updatedFields.caption }).eq('id', id);
   }
-  if (error) console.error('updatePhoto error:', error);
-  notifyDbChanged();
 };
 
 export const deletePhoto = async (id) => {
-  const { error } = await supabase.from('photos').delete().eq('id', id);
-  if (error) console.error('deletePhoto error:', error);
+  const db = getDatabase();
+  db.photos = db.photos.filter(p => p.id !== id);
+  saveDatabaseLocal(db);
   notifyDbChanged();
+
+  await supabase.from('photos').delete().eq('id', id);
 };
 
 export const likePhoto = async (id) => {
+  const db = getDatabase();
+  db.photos = db.photos.map(p => p.id === id ? { ...p, likes: (p.likes || 0) + 1 } : p);
+  saveDatabaseLocal(db);
+  notifyDbChanged();
+
   const { data: current } = await supabase.from('photos').select('likes').eq('id', id).single();
   const currentLikes = (current && current.likes) ? current.likes : 0;
-  const { data, error } = await supabase.from('photos').update({ likes: currentLikes + 1 }).eq('id', id).select();
-  if (error) console.error('likePhoto error:', error);
-  notifyDbChanged();
+  const { data } = await supabase.from('photos').update({ likes: currentLikes + 1 }).eq('id', id).select();
   return (data && data[0]) ? normalizePhoto(data[0]) : { id, likes: currentLikes + 1 };
 };
 
-// Milestones
+// --- Milestones ---
 export const addMilestone = async (milestone) => {
   const full = normalizeMilestone(milestone);
-  const { data, error } = await supabase.from('milestones').insert([full]).select();
-  if (error) console.error('addMilestone error:', error);
+  const db = getDatabase();
+  db.milestones = [...db.milestones.filter(m => m.id !== full.id), full];
+  saveDatabaseLocal(db);
   notifyDbChanged();
+
+  const { data } = await supabase.from('milestones').insert([full]).select();
   return (data && data[0]) ? normalizeMilestone(data[0]) : full;
 };
 
 export const updateMilestone = async (id, updatedFields) => {
-  const { error } = await supabase.from('milestones').update(updatedFields).eq('id', id);
-  if (error) console.error('updateMilestone error:', error);
+  const db = getDatabase();
+  db.milestones = db.milestones.map(m => m.id === id ? normalizeMilestone({ ...m, ...updatedFields }) : m);
+  saveDatabaseLocal(db);
   notifyDbChanged();
+
+  await supabase.from('milestones').update(updatedFields).eq('id', id);
 };
 
 export const deleteMilestone = async (id) => {
-  const { error } = await supabase.from('milestones').delete().eq('id', id);
-  if (error) console.error('deleteMilestone error:', error);
+  const db = getDatabase();
+  db.milestones = db.milestones.filter(m => m.id !== id);
+  saveDatabaseLocal(db);
   notifyDbChanged();
+
+  await supabase.from('milestones').delete().eq('id', id);
 };
 
-// Contact Messages
+// --- Contact Messages ---
 export const addMessage = async (message) => {
   const full = normalizeMessage(message);
+  const db = getDatabase();
+  db.messages = [full, ...db.messages.filter(msg => msg.id !== full.id)];
+  saveDatabaseLocal(db);
+  notifyDbChanged();
+
   let { data, error } = await supabase.from('messages').insert([full]).select();
   if (error && error.code === 'PGRST204') {
-    const corePayload = {
-      name: full.name,
-      email: full.email,
-      phone: full.phone,
-      message: full.message
-    };
+    const corePayload = { name: full.name, email: full.email, phone: full.phone, message: full.message };
     const retry = await supabase.from('messages').insert([corePayload]).select();
     data = retry.data;
-    error = retry.error;
   }
-  if (error) console.error('addMessage error:', error);
-  notifyDbChanged();
   return (data && data[0]) ? normalizeMessage(data[0]) : full;
 };
 
 export const toggleMessageReadStatus = async (id) => {
+  const db = getDatabase();
+  db.messages = db.messages.map(msg => msg.id === id ? { ...msg, read: !msg.read } : msg);
+  saveDatabaseLocal(db);
+  notifyDbChanged();
+
   const { data: current } = await supabase.from('messages').select('read').eq('id', id).single();
   const newReadState = current ? !current.read : true;
-  let { error } = await supabase.from('messages').update({ read: newReadState }).eq('id', id);
-  if (error) console.error('toggleMessageReadStatus error:', error);
-  notifyDbChanged();
+  await supabase.from('messages').update({ read: newReadState }).eq('id', id);
 };
 
 export const deleteMessage = async (id) => {
-  const { error } = await supabase.from('messages').delete().eq('id', id);
-  if (error) console.error('deleteMessage error:', error);
+  const db = getDatabase();
+  db.messages = db.messages.filter(msg => msg.id !== id);
+  saveDatabaseLocal(db);
   notifyDbChanged();
+
+  await supabase.from('messages').delete().eq('id', id);
 };
 
-// Backup & Restore
+// --- Backup & Restore ---
 export const exportDatabase = async () => {
   const db = await fetchDatabaseApi();
   const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(JSON.stringify(db, null, 2))}`;
@@ -448,6 +493,7 @@ export const importDatabase = async (jsonString) => {
       if (Array.isArray(data.messages) && data.messages.length > 0) {
         await supabase.from('messages').upsert(data.messages.map(normalizeMessage));
       }
+      saveDatabaseLocal(data);
       notifyDbChanged();
       return true;
     }
@@ -458,7 +504,7 @@ export const importDatabase = async (jsonString) => {
   }
 };
 
-// Global Search
+// --- Global Search ---
 export const globalSearch = async (query) => {
   if (!query || !query.trim()) return [];
   const db = await fetchDatabaseApi();
