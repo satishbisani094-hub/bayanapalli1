@@ -126,29 +126,6 @@ const normalizeMessage = (msg) => ({
   read: Boolean(msg.read)
 });
 
-// --- Supabase Smart Insert/Update Helper ---
-async function safeInsert(table, payload, fallbackPayload) {
-  let { data, error } = await supabase.from(table).insert([payload]).select();
-  if (error && error.code === 'PGRST204' && fallbackPayload) {
-    console.warn(`Retrying insert into ${table} with fallback schema payload`);
-    const retry = await supabase.from(table).insert([fallbackPayload]).select();
-    data = retry.data;
-    error = retry.error;
-  }
-  if (error) console.error(`Insert error for ${table}:`, error);
-  return data;
-}
-
-async function safeUpdate(table, id, updatedFields, fallbackFields) {
-  let { error } = await supabase.from(table).update(updatedFields).eq('id', id);
-  if (error && error.code === 'PGRST204' && fallbackFields) {
-    console.warn(`Retrying update for ${table} with fallback schema fields`);
-    const retry = await supabase.from(table).update(fallbackFields).eq('id', id);
-    error = retry.error;
-  }
-  if (error) console.error(`Update error for ${table}:`, error);
-}
-
 // --- Query API ---
 export const fetchDatabaseApi = async () => {
   try {
@@ -161,13 +138,20 @@ export const fetchDatabaseApi = async () => {
       supabase.from('messages').select('*').order('created_at', { ascending: true })
     ]);
 
+    const rawC = resC.data || [];
+    const rawF = resF.data || [];
+    const rawA = resA.data || [];
+    const rawP = resP.data || [];
+    const rawM = resM.data || [];
+    const rawMsg = resMsg.data || [];
+
     const data = {
-      committee: (resC.data || []).map(normalizeMember),
-      festivals: (resF.data || []).map(normalizeFestival),
-      albums: (resA.data || []).map(normalizeAlbum),
-      photos: (resP.data || []).map(normalizePhoto),
-      milestones: (resM.data || []).map(normalizeMilestone),
-      messages: (resMsg.data || []).map(normalizeMessage)
+      committee: rawC.map(normalizeMember),
+      festivals: rawF.map(normalizeFestival),
+      albums: rawA.map(normalizeAlbum),
+      photos: rawP.map(normalizePhoto),
+      milestones: rawM.map(normalizeMilestone),
+      messages: rawMsg.map(normalizeMessage)
     };
 
     try {
@@ -192,26 +176,41 @@ export const getMembers = () => getDatabase().committee;
 
 export const addMember = async (member) => {
   const full = normalizeMember(member);
-  const coreFallback = {
-    name: full.name,
-    role: full.role,
-    phone: full.phone,
-    image: full.photo
-  };
+  
+  // Try full payload first
+  let { data, error } = await supabase.from('committee').insert([full]).select();
 
-  const data = await safeInsert('committee', full, coreFallback);
+  // If column error PGRST204 occurs, fallback to core existing schema columns
+  if (error && error.code === 'PGRST204') {
+    const corePayload = {
+      name: full.name,
+      role: full.role,
+      phone: full.phone,
+      image: full.photo
+    };
+    const retry = await supabase.from('committee').insert([corePayload]).select();
+    data = retry.data;
+    error = retry.error;
+  }
+
+  if (error) console.error('addMember error:', error);
   notifyDbChanged();
   return (data && data[0]) ? normalizeMember(data[0]) : full;
 };
 
 export const updateMember = async (id, updatedFields) => {
-  const coreFallback = {};
-  if (updatedFields.name) coreFallback.name = updatedFields.name;
-  if (updatedFields.role) coreFallback.role = updatedFields.role;
-  if (updatedFields.phone) coreFallback.phone = updatedFields.phone;
-  if (updatedFields.photo || updatedFields.image) coreFallback.image = updatedFields.photo || updatedFields.image;
-
-  await safeUpdate('committee', id, updatedFields, coreFallback);
+  let { error } = await supabase.from('committee').update(updatedFields).eq('id', id);
+  if (error && error.code === 'PGRST204') {
+    const coreFields = {};
+    if (updatedFields.name) coreFields.name = updatedFields.name;
+    if (updatedFields.role) coreFields.role = updatedFields.role;
+    if (updatedFields.phone) coreFields.phone = updatedFields.phone;
+    if (updatedFields.photo || updatedFields.image) coreFields.image = updatedFields.photo || updatedFields.image;
+    
+    const retry = await supabase.from('committee').update(coreFields).eq('id', id);
+    error = retry.error;
+  }
+  if (error) console.error('updateMember error:', error);
   notifyDbChanged();
 };
 
@@ -224,26 +223,36 @@ export const deleteMember = async (id) => {
 // Festivals
 export const addFestival = async (festival) => {
   const full = normalizeFestival(festival);
-  const coreFallback = {
-    title: full.title || full.name,
-    date: full.date,
-    description: full.description,
-    image: full.coverImage
-  };
-
-  const data = await safeInsert('festivals', full, coreFallback);
+  let { data, error } = await supabase.from('festivals').insert([full]).select();
+  if (error && error.code === 'PGRST204') {
+    const corePayload = {
+      title: full.title || full.name,
+      date: full.date,
+      description: full.description,
+      image: full.coverImage
+    };
+    const retry = await supabase.from('festivals').insert([corePayload]).select();
+    data = retry.data;
+    error = retry.error;
+  }
+  if (error) console.error('addFestival error:', error);
   notifyDbChanged();
   return (data && data[0]) ? normalizeFestival(data[0]) : full;
 };
 
 export const updateFestival = async (id, updatedFields) => {
-  const coreFallback = {};
-  if (updatedFields.title || updatedFields.name) coreFallback.title = updatedFields.title || updatedFields.name;
-  if (updatedFields.date) coreFallback.date = updatedFields.date;
-  if (updatedFields.description) coreFallback.description = updatedFields.description;
-  if (updatedFields.coverImage || updatedFields.image) coreFallback.image = updatedFields.coverImage || updatedFields.image;
+  let { error } = await supabase.from('festivals').update(updatedFields).eq('id', id);
+  if (error && error.code === 'PGRST204') {
+    const coreFields = {};
+    if (updatedFields.title || updatedFields.name) coreFields.title = updatedFields.title || updatedFields.name;
+    if (updatedFields.date) coreFields.date = updatedFields.date;
+    if (updatedFields.description) coreFields.description = updatedFields.description;
+    if (updatedFields.coverImage || updatedFields.image) coreFields.image = updatedFields.coverImage || updatedFields.image;
 
-  await safeUpdate('festivals', id, updatedFields, coreFallback);
+    const retry = await supabase.from('festivals').update(coreFields).eq('id', id);
+    error = retry.error;
+  }
+  if (error) console.error('updateFestival error:', error);
   notifyDbChanged();
 };
 
@@ -256,24 +265,34 @@ export const deleteFestival = async (id) => {
 // Photo Albums
 export const addAlbum = async (album) => {
   const full = normalizeAlbum(album);
-  const coreFallback = {
-    title: full.title || full.name,
-    date: full.date,
-    cover_image: full.coverImage
-  };
-
-  const data = await safeInsert('albums', full, coreFallback);
+  let { data, error } = await supabase.from('albums').insert([full]).select();
+  if (error && error.code === 'PGRST204') {
+    const corePayload = {
+      title: full.title || full.name,
+      date: full.date,
+      cover_image: full.coverImage
+    };
+    const retry = await supabase.from('albums').insert([corePayload]).select();
+    data = retry.data;
+    error = retry.error;
+  }
+  if (error) console.error('addAlbum error:', error);
   notifyDbChanged();
   return (data && data[0]) ? normalizeAlbum(data[0]) : full;
 };
 
 export const updateAlbum = async (id, updatedFields) => {
-  const coreFallback = {};
-  if (updatedFields.title || updatedFields.name) coreFallback.title = updatedFields.title || updatedFields.name;
-  if (updatedFields.date) coreFallback.date = updatedFields.date;
-  if (updatedFields.coverImage || updatedFields.cover_image) coreFallback.cover_image = updatedFields.coverImage || updatedFields.cover_image;
+  let { error } = await supabase.from('albums').update(updatedFields).eq('id', id);
+  if (error && error.code === 'PGRST204') {
+    const coreFields = {};
+    if (updatedFields.title || updatedFields.name) coreFields.title = updatedFields.title || updatedFields.name;
+    if (updatedFields.date) coreFields.date = updatedFields.date;
+    if (updatedFields.coverImage || updatedFields.cover_image) coreFields.cover_image = updatedFields.coverImage || updatedFields.cover_image;
 
-  await safeUpdate('albums', id, updatedFields, coreFallback);
+    const retry = await supabase.from('albums').update(coreFields).eq('id', id);
+    error = retry.error;
+  }
+  if (error) console.error('updateAlbum error:', error);
   notifyDbChanged();
 };
 
@@ -286,26 +305,42 @@ export const deleteAlbum = async (id) => {
 // Photos
 export const addPhoto = async (photo) => {
   const full = normalizePhoto(photo);
-  const coreFallback = {
-    url: full.url,
-    caption: full.caption
-  };
-
-  const data = await safeInsert('photos', full, coreFallback);
+  let { data, error } = await supabase.from('photos').insert([full]).select();
+  if (error && error.code === 'PGRST204') {
+    const corePayload = {
+      url: full.url,
+      caption: full.caption
+    };
+    const retry = await supabase.from('photos').insert([corePayload]).select();
+    data = retry.data;
+    error = retry.error;
+  }
+  if (error) console.error('addPhoto error:', error);
   notifyDbChanged();
   return (data && data[0]) ? normalizePhoto(data[0]) : full;
 };
 
 export const addPhotos = async (photosList) => {
   const payloads = photosList.map(normalizePhoto);
-  const { data, error } = await supabase.from('photos').insert(payloads).select();
+  let { data, error } = await supabase.from('photos').insert(payloads).select();
+  if (error && error.code === 'PGRST204') {
+    const corePayloads = payloads.map(p => ({ url: p.url, caption: p.caption }));
+    const retry = await supabase.from('photos').insert(corePayloads).select();
+    data = retry.data;
+    error = retry.error;
+  }
   if (error) console.error('addPhotos error:', error);
   notifyDbChanged();
   return (data || []).map(normalizePhoto);
 };
 
 export const updatePhoto = async (id, updatedFields) => {
-  await safeUpdate('photos', id, updatedFields, { caption: updatedFields.caption });
+  let { error } = await supabase.from('photos').update(updatedFields).eq('id', id);
+  if (error && error.code === 'PGRST204') {
+    const retry = await supabase.from('photos').update({ caption: updatedFields.caption }).eq('id', id);
+    error = retry.error;
+  }
+  if (error) console.error('updatePhoto error:', error);
   notifyDbChanged();
 };
 
@@ -327,13 +362,15 @@ export const likePhoto = async (id) => {
 // Milestones
 export const addMilestone = async (milestone) => {
   const full = normalizeMilestone(milestone);
-  const data = await safeInsert('milestones', full, full);
+  const { data, error } = await supabase.from('milestones').insert([full]).select();
+  if (error) console.error('addMilestone error:', error);
   notifyDbChanged();
   return (data && data[0]) ? normalizeMilestone(data[0]) : full;
 };
 
 export const updateMilestone = async (id, updatedFields) => {
-  await safeUpdate('milestones', id, updatedFields, updatedFields);
+  const { error } = await supabase.from('milestones').update(updatedFields).eq('id', id);
+  if (error) console.error('updateMilestone error:', error);
   notifyDbChanged();
 };
 
@@ -346,14 +383,19 @@ export const deleteMilestone = async (id) => {
 // Contact Messages
 export const addMessage = async (message) => {
   const full = normalizeMessage(message);
-  const coreFallback = {
-    name: full.name,
-    email: full.email,
-    phone: full.phone,
-    message: full.message
-  };
-
-  const data = await safeInsert('messages', full, coreFallback);
+  let { data, error } = await supabase.from('messages').insert([full]).select();
+  if (error && error.code === 'PGRST204') {
+    const corePayload = {
+      name: full.name,
+      email: full.email,
+      phone: full.phone,
+      message: full.message
+    };
+    const retry = await supabase.from('messages').insert([corePayload]).select();
+    data = retry.data;
+    error = retry.error;
+  }
+  if (error) console.error('addMessage error:', error);
   notifyDbChanged();
   return (data && data[0]) ? normalizeMessage(data[0]) : full;
 };
@@ -361,7 +403,8 @@ export const addMessage = async (message) => {
 export const toggleMessageReadStatus = async (id) => {
   const { data: current } = await supabase.from('messages').select('read').eq('id', id).single();
   const newReadState = current ? !current.read : true;
-  await safeUpdate('messages', id, { read: newReadState }, {});
+  let { error } = await supabase.from('messages').update({ read: newReadState }).eq('id', id);
+  if (error) console.error('toggleMessageReadStatus error:', error);
   notifyDbChanged();
 };
 
