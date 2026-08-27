@@ -61,7 +61,7 @@ export default function Committee({ selectedItem, setSelectedItem }) {
   const filteredMembers = useMemo(() => {
     return committee.filter(m => {
       const matchesSearch = m.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                            m.description.toLowerCase().includes(searchTerm.toLowerCase());
+                            (m.description || '').toLowerCase().includes((searchTerm || '').toLowerCase());
       const matchesRole = roleFilter === 'all' || m.role === roleFilter;
       
       let matchesYear = true;
@@ -80,7 +80,7 @@ export default function Committee({ selectedItem, setSelectedItem }) {
 
   // Split into current and former
   const currentCommittee = useMemo(() => {
-    return filteredMembers.filter(m => m.status === 'current');
+    return filteredMembers.filter(m => m.status !== 'former');
   }, [filteredMembers]);
 
   const formerCommittee = useMemo(() => {

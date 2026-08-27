@@ -6,7 +6,7 @@ export default function Home({ setActivePage, setGalleryFilter, setCommitteeFilt
   const { committee, festivals, photos } = useDatabase();
 
   // Compute live stats
-  const activeMembersCount = committee.filter(m => m.status === 'current').length;
+  const activeMembersCount = committee.filter(m => m.status !== 'former').length;
   const festivalsCount = festivals.length;
   const photosCount = photos.length;
   
